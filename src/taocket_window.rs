@@ -7,10 +7,11 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder},
     window::{Window, WindowBuilder},
 };
+
 use wry::{NewWindowFeatures, NewWindowResponse, WebView, WebViewBuilder, http::Request};
 
 use crate::{
-    callback, emit_js,
+    callback,
     ws::{self, Message, Responder},
 };
 
@@ -85,13 +86,6 @@ pub struct IpcMessage<T> {
     pub payload: Payload<T>,
 }
 
-/// WebSocket message structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WsMessage {
-    name: &'static str,
-    message: &'static str,
-}
-
 /// Internal window control events
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
@@ -145,11 +139,12 @@ impl<E: CustomEvent> TaocketBuilder<E> {
     /// # Arguments
     /// * `init_window` - Function called once during window initialization
     /// * `handler` - Function called for each user event
-    pub fn run<F, S>(self, init_window: S, handler: F) -> wry::Result<()>
+    pub fn run<F, S, W>(self, init_window: S, handler: F, ws_handler: W) -> wry::Result<()>
     where
         E: DeserializeOwned + Serialize,
         S: FnOnce(&Window),
         F: Fn(Payload<E>, WindowContext) + Send + 'static,
+        W: Fn(u64, Message, &Clients) + Send + 'static,
     {
         let event_loop = EventLoopBuilder::<E>::with_user_event().build();
 
@@ -158,8 +153,8 @@ impl<E: CustomEvent> TaocketBuilder<E> {
 
         let websocket_clients = Arc::new(Mutex::new(HashMap::new()));
         let webview_holder = self.create_webview(&window, &websocket_clients, handler)?;
-
-        self.run_event_loop(event_loop, window, websocket_clients, webview_holder)
+        self.spawn_websocket_thread(websocket_clients.clone(), ws_handler);
+        self.run_event_loop(event_loop, window, webview_holder)
     }
 
     // ------------------------------------------------------------------------
@@ -249,12 +244,8 @@ impl<E: CustomEvent> TaocketBuilder<E> {
         self,
         event_loop: tao::event_loop::EventLoop<E>,
         window: Arc<Window>,
-        websocket_clients: Clients,
         _webview_holder: WebviewContext,
     ) -> wry::Result<()> {
-        // Spawn WebSocket event polling thread
-        self.spawn_websocket_thread(websocket_clients.clone());
-
         // Run the main event loop
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
@@ -273,7 +264,10 @@ impl<E: CustomEvent> TaocketBuilder<E> {
         });
     }
 
-    fn spawn_websocket_thread(&self, websocket_clients: Clients) {
+    fn spawn_websocket_thread<W>(&self, websocket_clients: Clients, ws_handler: W)
+    where
+        W: Fn(u64, Message, &Clients) + Send + 'static,
+    {
         let event_hub =
             ws::launch(self.attr.websocket_port).expect("Failed to launch WebSocket server");
 
@@ -281,30 +275,19 @@ impl<E: CustomEvent> TaocketBuilder<E> {
             loop {
                 match event_hub.poll_event() {
                     ws::Event::Connect(client_id, responder) => {
+                        println!("Connection established: {:?}", &client_id);
                         websocket_clients.lock().insert(client_id, responder);
                     }
                     ws::Event::Disconnect(client_id) => {
+                        println!("{:?} out!", &client_id);
                         websocket_clients.lock().remove(&client_id);
                     }
-                    ws::Event::Message(client_id, _message) => {
-                        Self::handle_websocket_message(client_id, &websocket_clients);
+                    ws::Event::Message(client_id, message) => {
+                        ws_handler(client_id, message, &websocket_clients);
                     }
                 }
             }
         });
-    }
-
-    fn handle_websocket_message(client_id: u64, clients: &Clients) {
-        if let Some(responder) = clients.lock().get(&client_id) {
-            let response = WsMessage {
-                name: "jul",
-                message: "im stuff",
-            };
-
-            if let Ok(json) = serde_json::to_string(&response) {
-                responder.send(Message::Text(json));
-            }
-        }
     }
 }
 
@@ -313,9 +296,9 @@ impl<E: CustomEvent> TaocketBuilder<E> {
 // ============================================================================
 
 /// Broadcasts a message to all connected WebSocket clients
-pub fn broadcast_message(clients: &Clients, message: &str) {
+pub fn broadcast_message(clients: &Clients, message: String) {
     for (_id, responder) in clients.lock().iter() {
-        responder.send(Message::Text(message.to_string()));
+        responder.send(Message::Text(message.clone()));
     }
 }
 
@@ -354,7 +337,13 @@ fn handle_internal_window_event(
             callback!(_webview, payload.event.to_str_response(), le_payload);
         }
         InternalWindowEvent::IsMinimized => {
-            std::process::exit(0);
+            let ismin = window.is_minimized();
+            let le_payload = WindowAttrPayload {
+                attr_type: &payload.event.as_str(),
+                value: serde_json::Value::Bool(ismin),
+            };
+
+            callback!(_webview, payload.event.to_str_response(), le_payload);
         }
     }
 }

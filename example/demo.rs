@@ -1,24 +1,12 @@
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::{collections::HashMap, sync::Arc};
+
 use tao::dpi::LogicalSize;
 use taocket::{
-    AppConfig,
-    app::App,
-    emit,
-    taocket_window::{Payload, TaocketBuilder, WindowAttrs, broadcast_message},
-    ws::{self, Event, Message, Responder},
+    taocket_window::{TaocketBuilder, WindowAttrs, broadcast_message},
+    ws::Message,
 };
 use ts_rs::TS;
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(tag = "type", content = "data")]
-#[serde(rename = "AppEventHandler")]
-#[ts(export, export_to = "../taoket_types.d.ts")]
-pub enum MyEvent {
-    Close,
-    Minimize,
-    Maximize,
-}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export, export_to = "../taoket_types.d.ts")]
 struct TemplateLine {
@@ -27,6 +15,14 @@ struct TemplateLine {
     include: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export, export_to = "../taoket_types.d.ts")]
+struct WebsocketMessageResponse {
+    from_server: bool,
+    #[serde(rename = "type")]
+    msg_type: String,
+    content: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export, export_to = "../taoket_types.d.ts")]
 struct Template {
@@ -43,12 +39,6 @@ enum FrontEndEvent {
     Color,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WsMessage {
-    name: &'static str,
-    message: &'static str,
-}
-
 fn main() -> wry::Result<()> {
     TaocketBuilder::<FrontEndEvent>::new(WindowAttrs {
         dev_url: Some("http://localhost:5173".into()),
@@ -63,7 +53,7 @@ fn main() -> wry::Result<()> {
         },
         |payload, _ctx| {
             let content = serde_json::to_string_pretty(&payload.event).unwrap();
-            broadcast_message(&_ctx.clients, &content);
+            broadcast_message(&_ctx.clients, content);
 
             match payload.event {
                 FrontEndEvent::Template { template } => {}
@@ -71,31 +61,27 @@ fn main() -> wry::Result<()> {
                 FrontEndEvent::Color => todo!(),
             }
         },
+        //web socket message
+        |id, message, clients| match message {
+            Message::Text(some) => {
+                let response = WebsocketMessageResponse {
+                    from_server: false,
+                    msg_type: "some".into(),
+                    content: format!("Reply to {some}"),
+                };
+                if let Ok(json) = serde_json::to_string(&response) {
+                    let clients_guard = clients.lock(); // one lock for the duration
+                    if let Some(_responder) = clients_guard.get(&id) {
+                        for (_id, responder) in clients_guard.iter() {
+                            let _ = responder.send(Message::Text(json.clone()));
+                        }
+                    }
+                }
+            }
+        },
     )
 }
-fn _main() {
-    let config = AppConfig {
-        with_decorations: false,
-        dev_url: Some("http://localhost:5173".into()),
-        build_path: "frontend/dist".into(),
-        with_devtools: true,
-    };
 
-    App::builder::<MyEvent>(config)
-        .run(|payload, ctx| match payload.event {
-            MyEvent::Minimize => {
-                emit!(&ctx.webview, payload.id, json!("fuck"));
-                ctx.window.set_minimized(true);
-            }
-            MyEvent::Close => {
-                std::process::exit(69);
-            }
-            MyEvent::Maximize => {
-                ctx.window.set_maximized(true);
-            }
-        })
-        .unwrap();
-}
 #[cfg(test)]
 mod example_test {
     use super::*;
