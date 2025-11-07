@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Window Controls</title>
+		<style>
+			body {
+				font-family:
+					system-ui,
+					-apple-system,
+					"Segoe UI",
+					Roboto,
+					"Helvetica Neue",
+					Arial;
+				display: flex;
+				height: 100vh;
+				align-items: center;
+				justify-content: center;
+				background: #f3f4f6;
+				margin: 0;
+			}
+			.controls {
+				display: flex;
+				gap: 12px;
+				padding: 18px;
+				background: white;
+				border-radius: 10px;
+				box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+			}
+			button {
+				padding: 10px 14px;
+				border-radius: 8px;
+				border: 1px solid #ddd;
+				background: #fff;
+				cursor: pointer;
+				font-weight: 600;
+			}
+			button:hover {
+				transform: translateY(-1px);
+			}
+			button:active {
+				transform: translateY(0);
+			}
+			.close {
+				color: #fff;
+				background: #ef4444;
+				border-color: #ef4444;
+			}
+			.min {
+				color: #063970;
+				background: #bfdbfe;
+			}
+			.max {
+				color: #065f46;
+				background: #bbf7d0;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="controls">
+			<button id="closeBtn" class="close">Close</button>
+			<button id="minBtn" class="min">Minimize</button>
+			<button id="maxBtn" class="max">Maximize</button>
+		</div>
+
+		<script>
+			// Generic helper to send command to host/webview
+			function sendHostCommand(cmd, data = {}) {
+				// Wry/WebView2 commonly exposes window.external.invoke(message)
+				const payload = JSON.stringify({ cmd, data });
+				if (window.external && typeof window.external.invoke === "function") {
+					window.external.invoke(payload);
+					return true;
+				}
+
+				// Tauri style / other bridges may use a different path (example):
+				if (window.__TAURI__ && window.__TAURI__.invoke) {
+					// for Tauri: call invoke directly (adjust command name as your backend expects)
+					window.__TAURI__.invoke(cmd, data).catch(() => {});
+					return true;
+				}
+
+				// If no host IPC available, return false so caller can fallback
+				return false;
+			}
+
+			// Close handler
+			document.getElementById("closeBtn").addEventListener("click", () => {
+				// Prefer host IPC
+				if (sendHostCommand("window:close")) return;
+
+				// Fallback (browser): try self-close (may be blocked unless opened by script)
+				try {
+					window.close();
+				} catch (e) {
+					console.warn("Close not available in this environment", e);
+				}
+			});
+
+			// Minimize handler
+			document.getElementById("minBtn").addEventListener("click", () => {
+				if (sendHostCommand("window:minimize")) return;
+
+				// Browser fallback: move window offscreen and shrink (best-effort; not supported everywhere)
+				try {
+					// best-effort: shrink to 1x1 and move to top-left — may be blocked by browser
+					window.resizeTo(1, 1);
+					window.moveTo(-9999, -9999);
+				} catch (e) {
+					console.warn("Minimize not available in this environment", e);
+				}
+			});
+
+			// Maximize handler (toggle)
+			let maximized = false;
+			document.getElementById("maxBtn").addEventListener("click", () => {
+				if (sendHostCommand("window:maximize")) return;
+
+				// Browser fallback: toggle between stored size and fullscreen
+				try {
+					if (!maximized) {
+						if (document.documentElement.requestFullscreen) {
+							document.documentElement.requestFullscreen();
+						} else if (document.body.requestFullscreen) {
+							document.body.requestFullscreen();
+						} else {
+							// fallback resize (may be blocked)
+							window.resizeTo(screen.availWidth, screen.availHeight);
+							window.moveTo(0, 0);
+						}
+						maximized = true;
+					} else {
+						if (document.exitFullscreen) {
+							document.exitFullscreen();
+						} else {
+							// cannot restore original size reliably without tracking it earlier
+						}
+						maximized = false;
+					}
+				} catch (e) {
+					console.warn("Maximize not available in this environment", e);
+				}
+			});
+
+			// Optional: expose for debugging
+			window.__WINDOW_CONTROLS = {
+				sendHostCommand,
+			};
+		</script>
+	</body>
+</html>
