@@ -6,8 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::taocket_window::AssetProvider;
-
 type Result<T> = std::result::Result<T, ConfigError>;
 
 #[derive(Debug, thiserror::Error)]

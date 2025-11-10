@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 use tao::{
+    dpi::LogicalSize,
     event::Event,
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::{Window, WindowBuilder},
@@ -213,6 +214,11 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
     ) -> wry::Result<Arc<Window>> {
         let window = WindowBuilder::new()
             .with_transparent(true)
+            .with_inner_size(LogicalSize::new(
+                self.config.size.width,
+                self.config.size.height,
+            ))
+            .with_always_on_top(self.config.top_most)
             .build(event_loop)
             .expect("Failed to create window");
 
@@ -237,6 +243,7 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
         let webview_clone = Arc::clone(&webview_holder);
 
         let webview_builder = WebViewBuilder::new()
+            .with_devtools(self.config.devtools)
             .with_initialization_script(include_str!("scripts/init.js"))
             .with_initialization_script(include_str!("scripts/dragevent.js"))
             .with_new_window_req_handler(Self::handle_new_window_request)
@@ -254,7 +261,7 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
         let webview_builder = if cfg!(debug_assertions) {
             webview_builder
                 .with_url(dev_url)
-                .with_on_page_load_handler(|p, s| println!("{s}"))
+                .with_on_page_load_handler(|p, s| println!("loading page {s}"))
         } else {
             self.setup_production_protocol(webview_builder)
         };
