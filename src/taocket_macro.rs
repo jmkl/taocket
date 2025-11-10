@@ -1,5 +1,8 @@
-use serde::Serialize;
 use wry::WebView;
+
+pub fn with_callback(webview: &WebView, script: &str) {
+    let _ = webview.evaluate_script_with_callback(script, |result| println!("{}", result));
+}
 
 #[macro_export]
 macro_rules! callback {

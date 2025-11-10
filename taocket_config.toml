@@ -1,0 +1,13 @@
+dev_url = "http://localhost:5173"
+build_path = "./frontend"
+devtools = true
+top_most = false
+size = [
+    300.0,
+    600.0,
+]
+
+[keys]
+"ctrl+b" = "something|UseFull"
+"ctrl+a" = "something|UseFull"
+"ctrl+c" = "something|GenerateBoobs"
