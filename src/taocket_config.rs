@@ -133,6 +133,10 @@ impl TaocketConfig {
         previous
     }
 
+    pub fn get_all_hotkeys(&self) -> &HashMap<String, String> {
+        &self.keys
+    }
+
     /// Remove a hotkey binding
     pub fn remove_hotkey(&mut self, key: &str) -> Option<String> {
         self.keys.remove(key)

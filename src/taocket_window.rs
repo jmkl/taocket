@@ -1,13 +1,8 @@
-use crossbeam_channel;
-use global_hotkey::{HotKeyState::Released, hotkey::HotKey};
+use crossbeam_channel::{self, Sender};
+use global_hotkey::HotKeyState::Released;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use tao::{
     dpi::LogicalSize,
     event::Event,
@@ -20,7 +15,7 @@ use crate::{
     CustomEvent, callback,
     taocket_config::TaocketConfig,
     taocket_context::{Clients, WebviewContext, WindowContext},
-    taocket_hotkey::TaocketHotkeyManager,
+    taocket_hotkey::{HotkeyAndFunc, TaocketHotkeyManager},
     taocket_protocol, taocket_utils,
     ws::{self, Message},
 };
@@ -181,10 +176,10 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
     where
         E: DeserializeOwned + Serialize,
         X: DeserializeOwned + Serialize + Clone + std::fmt::Debug,
-        S: FnOnce(&Window, Arc<Mutex<TaocketHotkeyManager>>),
+        S: FnOnce(&Window, Arc<Mutex<TaocketHotkeyManager>>, TaocketConfig),
         F: Fn(Payload<E>, WindowContext<E>) + Send + 'static,
         W: Fn(u64, Message, &Clients, &EventLoopProxy<E>) + Send + 'static,
-        H: Fn(crossbeam_channel::Sender<X>, &HotKey) + Send + 'static,
+        H: Fn(Dispatcher<X>, &HotkeyAndFunc) + Send + 'static,
     {
         let event_loop = EventLoopBuilder::<E>::with_user_event().build();
         let proxy = event_loop.create_proxy();
@@ -194,7 +189,7 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
         let manager = Arc::new(Mutex::new(hotkey_manager));
         let manager_clone = Arc::clone(&manager);
         let manager_clone_eventloop = Arc::clone(&manager);
-        init_window(&window, manager_clone);
+        init_window(&window, manager_clone, self.config.clone());
         let websocket_clients = Arc::new(Mutex::new(HashMap::new()));
         let webview_holder = self.create_webview(&window, &websocket_clients, &proxy, handler)?;
 
@@ -399,22 +394,23 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
     where
         E: Serialize,
         X: Serialize + std::fmt::Debug,
-        H: Fn(crossbeam_channel::Sender<X>, &HotKey) + Send + 'static,
+        H: Fn(Dispatcher<X>, &HotkeyAndFunc) + Send + 'static,
     {
         let receiver = global_hotkey::GlobalHotKeyEvent::receiver();
-        let (tx, rx) = crossbeam_channel::unbounded::<X>();
+        let (tx, rx) = crossbeam_channel::unbounded::<TxEvent<X>>();
+        let dispatcher = Dispatcher::new(tx);
         event_loop.run(move |event, _, control_flow| {
             // *control_flow = ControlFlow::Wait;
             *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(16));
 
             if let Ok(event) = receiver.try_recv() {
 
-												let guard = hotkeymanager.lock();
-											for(key,hk) in	guard.registered_hotkeys.iter(){
-												if key == &event.id && event.state == Released{
-													hotkey_handler(tx.clone(),hk);
-												}
-												}
+			let guard = hotkeymanager.lock();
+			for(key,hk) in	guard.registered_hotkeys.iter(){
+				if key == &event.id && event.state == Released{
+					hotkey_handler(dispatcher.clone(),hk);
+				}
+			}
                   }
             match event {
                 Event::MainEventsCleared => {
@@ -445,10 +441,28 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
                 _ => {}
             }
             while let Ok(msg) = rx.try_recv(){
-            if let Some(ref webview) = *webview_holder.lock() {
-             println!("message {msg:?}");
-             _ = webview.evaluate_script("console.log('hello')");
-            }
+            match msg{
+                TxEvent::User(_) => {
+                            },
+                TxEvent::Window(w) => {
+               	            match w {
+                                UserWindowEvent::Minimize => {
+                                window.set_minimized(true);
+                                },
+                                UserWindowEvent::Maximize => window.set_maximized(true),
+                                UserWindowEvent::UnMaximize =>window.set_maximized(false) ,
+                                UserWindowEvent::Close => *control_flow=ControlFlow::Exit,
+                                UserWindowEvent::Focus => window.set_focus(),
+                            }
+                            },
+                TxEvent::Script(scrpt) => {
+
+		                        if let Some(ref webview) = *webview_holder.lock() {
+		                         println!("message");
+		                         _ = webview.evaluate_script(&scrpt);
+		                        }
+                },
+            };
 
             }
         });
@@ -482,6 +496,49 @@ impl<A: AssetProvider + 'static, E: CustomEvent, X: CustomEvent> TaocketBuilder<
                 }
             }
         });
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "data")]
+pub enum UserWindowEvent {
+    Minimize,
+    Maximize,
+    UnMaximize,
+    Close,
+    Focus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "source", content = "payload")]
+pub enum TxEvent<X> {
+    User(X),
+    Script(String),
+    Window(UserWindowEvent),
+}
+#[derive(Debug, Clone)]
+pub struct Dispatcher<X>
+where
+    X: Serialize + std::fmt::Debug + Send + Clone + 'static,
+{
+    tx: Sender<TxEvent<X>>,
+}
+impl<X> Dispatcher<X>
+where
+    X: Serialize + std::fmt::Debug + Send + Clone + 'static,
+{
+    pub fn new(tx: Sender<TxEvent<X>>) -> Self {
+        Self { tx }
+    }
+    pub fn send_script(&self, script: String) {
+        self.tx.send(TxEvent::Script(script)).unwrap();
+    }
+    pub fn send_user(&self, event: X) {
+        self.tx.send(TxEvent::User(event)).unwrap();
+    }
+
+    pub fn send_window(&self, event: UserWindowEvent) {
+        self.tx.send(TxEvent::Window(event)).unwrap();
     }
 }
 

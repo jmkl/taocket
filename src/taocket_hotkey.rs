@@ -4,7 +4,7 @@ use global_hotkey::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyInfo {
@@ -20,9 +20,20 @@ pub enum HotkeyResponse {
     Failed { err: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyAndFunc {
+    pub key: String,
+    pub func: String,
+}
+impl Display for HotkeyAndFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.key, self.func)
+    }
+}
+
 pub struct TaocketHotkeyManager {
     manager: GlobalHotKeyManager,
-    pub registered_hotkeys: HashMap<u32, HotKey>,
+    pub registered_hotkeys: HashMap<u32, HotkeyAndFunc>,
 }
 
 impl TaocketHotkeyManager {
@@ -36,14 +47,34 @@ impl TaocketHotkeyManager {
             registered_hotkeys: HashMap::new(),
         })
     }
+    pub fn registered_hotkeys(&self, keynfunc: &[HotkeyAndFunc]) -> HotkeyResponse {
+        let mut registered_keys = Vec::new();
+        for k in keynfunc {
+            match parse_hotkey(&k.key) {
+                Ok(ok_key) => {
+                    if self.registered_hotkeys.contains_key(&ok_key.id()) {
+                        registered_keys.push(k);
+                    }
+                }
+                Err(err) => {
+                    println!("Error parsing key {}: {:?}", k, err);
+                }
+            }
+        }
+        HotkeyResponse::Registered {
+            key: format!("{:?}", registered_keys),
+        }
+    }
 
     /// Register a hotkey with a client-provided ID
-    pub fn register_hotkey(&mut self, key: String) -> HotkeyResponse {
-        match parse_hotkey(&key) {
+    pub fn register_hotkey(&mut self, key: HotkeyAndFunc) -> HotkeyResponse {
+        match parse_hotkey(&key.key.to_string()) {
             Ok(ok_key) => match self.manager.register(ok_key) {
                 Ok(_) => {
-                    self.registered_hotkeys.insert(ok_key.id(), ok_key);
-                    return HotkeyResponse::Registered { key: key };
+                    self.registered_hotkeys.insert(ok_key.id(), key.clone());
+                    return HotkeyResponse::Registered {
+                        key: key.to_string(),
+                    };
                 }
                 Err(err) => {
                     let err: String = format!("Error:{err:?}");
@@ -65,16 +96,16 @@ fn split_key_str(shortcut: &str) -> Vec<String> {
     let mut chars = shortcut.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        if ch == '+' {
+        if ch == '-' {
             if !current.is_empty() {
                 result.push(current.clone());
                 current.clear();
             }
 
-            // Check if next char is also '+'
-            if chars.peek() == Some(&'+') {
-                chars.next(); // consume the second '+'
-                result.push("+".to_string());
+            // Check if next char is also '-'
+            if chars.peek() == Some(&'-') {
+                chars.next(); // consume the second '-'
+                result.push("-".to_string());
             }
         } else {
             current.push(ch);
